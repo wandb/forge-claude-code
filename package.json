@@ -12,6 +12,8 @@
     "dev": "tsx src/cli.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "check": "npm run build && npm test",
+    "prepack": "node scripts/build/pack-marketplace.mjs",
+    "postpack": "node scripts/build/pack-marketplace.mjs --restore",
     "setup-hooks": "node scripts/install-git-hooks.mjs"
   },
   "dependencies": {

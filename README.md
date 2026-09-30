@@ -41,7 +41,7 @@ In non-interactive mode, the installer still creates config, registers the Claud
 - Warns and continues if either value is missing
 - Leaves environment-provided values in the environment rather than writing them into `settings.json`
 
-By default, `claude plugin marketplace add` clones `wandb/forge-claude-code` from GitHub. In CI or container sandboxes without git/SSH access to GitHub, pass `--source=local` to register the marketplace from the npm-installed tree on disk instead:
+By default, Claude Code clones `wandb/forge-claude-code` from GitHub. In CI or container sandboxes without git/SSH access to GitHub, pass `--source=local` to install the marketplace and plugin from the npm-installed tree on disk instead:
 
 ```bash
 npm install -g @coreweave/forge-claude-code

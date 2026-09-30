@@ -4,18 +4,22 @@
 
 // `registerPlugin` with InstallSource.Local must register the marketplace from
 // the npm-installed package on disk (no git clone), so CI/sandbox environments
-// without SSH access to GitHub can still install.
+// without SSH access to GitHub can still install. The packed marketplace must
+// also source the plugin from that tree, or `claude plugin install` still
+// clones GitHub (#176).
 
 import { test, suite, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { MARKETPLACE_NAME, MARKETPLACE_REPO } from '../src/setup.ts';
 import { readFakeCalls } from './helpers.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, '..');
 const FAKE_CLAUDE_BIN_DIR = path.join(HERE, 'fixtures', 'fake-claude-bin');
 
 function seedLocalPluginTree(npmPrefix: string): string {
@@ -110,6 +114,61 @@ suite('install --source=local', () => {
       () => registerPlugin(path.join(tmpHome, 'log.txt'), InstallSource.Local),
       /npm install -g @coreweave\/forge-claude-code/,
     );
+  });
+
+  test('npm pack: the tarball sources the plugin from itself while the repo copy keeps its GitHub pin', () => {
+    const pkgDir = path.join(tmpHome, 'pkg');
+    for (const entry of ['package.json', '.claude-plugin', 'hooks', 'skills', 'scripts']) {
+      fs.cpSync(path.join(REPO_ROOT, entry), path.join(pkgDir, entry), { recursive: true });
+    }
+    const manifestPath = path.join(pkgDir, '.claude-plugin', 'marketplace.json');
+    // Exercise the original regression even when the checked-in source is already local.
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.plugins[0].source = { source: 'github', repo: MARKETPLACE_REPO, ref: 'v0.2.15', sha: 'abc123' };
+    const repoManifest = `${JSON.stringify(manifest, null, 2)}\n`;
+    fs.writeFileSync(manifestPath, repoManifest);
+
+    const pack = spawnSync('npm', ['pack', '--pack-destination', pkgDir], { cwd: pkgDir, encoding: 'utf8' });
+    assert.equal(pack.status, 0, pack.stderr);
+    const tarball = fs.readdirSync(pkgDir).find((f) => f.endsWith('.tgz'));
+    assert.ok(tarball, `expected a tarball in ${pkgDir}`);
+    const unpacked = path.join(tmpHome, 'unpacked');
+    fs.mkdirSync(unpacked);
+    const untar = spawnSync('tar', ['-xzf', path.join(pkgDir, tarball), '-C', unpacked], { encoding: 'utf8' });
+    assert.equal(untar.status, 0, untar.stderr);
+
+    const packedRoot = path.join(unpacked, 'package');
+    const expected = JSON.parse(repoManifest);
+    expected.plugins[0].source = './';
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(packedRoot, '.claude-plugin', 'marketplace.json'), 'utf8')),
+      expected,
+    );
+    for (const file of ['.claude-plugin/plugin.json', 'hooks/hooks.json', 'hooks/hook-handler.sh']) {
+      assert.ok(fs.existsSync(path.join(packedRoot, file)), `'./' must resolve to a plugin root containing ${file}`);
+    }
+    assert.equal(fs.readFileSync(manifestPath, 'utf8'), repoManifest, 'packing must restore the repo manifest');
+  });
+
+  test('npm pack: a pack that died before postpack still restores the repo manifest on the next pack', () => {
+    const pkgDir = path.join(tmpHome, 'pkg');
+    fs.cpSync(path.join(REPO_ROOT, '.claude-plugin'), path.join(pkgDir, '.claude-plugin'), { recursive: true });
+    fs.cpSync(path.join(REPO_ROOT, 'scripts'), path.join(pkgDir, 'scripts'), { recursive: true });
+    const manifestPath = path.join(pkgDir, '.claude-plugin', 'marketplace.json');
+    // Exercise the original regression even when the checked-in source is already local.
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.plugins[0].source = { source: 'github', repo: MARKETPLACE_REPO, ref: 'v0.2.15', sha: 'abc123' };
+    const repoManifest = `${JSON.stringify(manifest, null, 2)}\n`;
+    fs.writeFileSync(manifestPath, repoManifest);
+    const script = path.join(pkgDir, 'scripts', 'build', 'pack-marketplace.mjs');
+
+    // prepack, crash, then a full prepack/postpack cycle.
+    for (const args of [[], [], ['--restore']]) {
+      const run = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+      assert.equal(run.status, 0, run.stderr);
+    }
+
+    assert.equal(fs.readFileSync(manifestPath, 'utf8'), repoManifest);
   });
 
   test('registerPlugin(): default source falls back to the github marketplace ref', async () => {
